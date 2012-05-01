@@ -1,0 +1,19 @@
+Metadata-Version: 1.1
+Name: SVNPlot
+Version: 0.7.6
+Summary: python module to generate graphs and statistics from Subversion repository data
+Home-page: http://code.google.com/p/svnplot
+Author: Nitin Bhide
+Author-email: nitinbhide@gmail.com
+License: http://www.opensource.org/licenses/bsd-license.php
+Description: UNKNOWN
+Platform: UNKNOWN
+Classifier: Development Status :: 4 - Beta
+Classifier: Environment :: Console
+Classifier: Intended Audience :: Developers
+Classifier: License :: OSI Approved :: BSD License
+Classifier: Operating System :: OS Independent
+Classifier: Topic :: Software Development :: Version Control
+Requires: matplotlib
+Requires: numpy
+Requires: pysvn
