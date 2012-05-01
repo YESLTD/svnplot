@@ -28,3 +28,6 @@ pip-log.txt
 
 #IntelliJ Idea
 .idea
+
+#Local stuff
+local
