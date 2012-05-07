@@ -135,6 +135,10 @@ def strip_zeros(dates, data):
             filtered_dates.append(dt)
             filtered_data.append(datedata)
     return(filtered_dates, filtered_data)
+
+def regexp(expr, item):
+    reg = re.compile(expr)
+    return reg.search(item) is not None
         
 class DeltaAvg:
     '''
@@ -224,6 +228,7 @@ class SVNStats(object):
         self.dbcon.create_function("dirname", 3, dirname)
         self.dbcon.create_function("filetype", 1, filetype)
         self.dbcon.create_function("getTemperatureAtTime", 4, getTemperatureAtTime)
+        self.dbcon.create_function("REGEXP", 2, regexp)
         self.dbcon.create_aggregate("deltaavg", 1, DeltaAvg)
         self.dbcon.create_aggregate("deltastddev", 1, DeltaStdDev)
                                     
@@ -307,7 +312,7 @@ class SVNStats(object):
         selQuery = "SELECT DISTINCT SVNLog.revno as revno from SVNLog, SVNLogDetailVw where (SVNLog.revno = SVNLogDetailVw.revno \
                     and SVNLogDetailVw.changedpath like '%s%%'" % self.__searchpath
         # Roman Zenka: apply the changedpath filter if regexp filtering is enabled
-        selQuery = selQuery + self.__changedPathSqlFilter()
+        selQuery = selQuery + " and SVNLogDetailVw.changedpath REGEXP '%s'" % self.__changedPathSqlFilter()
         if( self.__startDate != None):
             selQuery = selQuery + " and julianday(SVNLog.commitdate) >= julianday('%s')" % self.__startDate
         if( self.__endDate != None):
@@ -319,19 +324,11 @@ class SVNStats(object):
         self.cur.execute("CREATE INDEX srchvidx on search_view(revno)")
         self.dbcon.commit()
 
-    def __activityHotnessSqlFilter(self):
-        # TODO: use the regexp
-        #if( self.__filterpaths != None):
-        #    return " and (ActivityHotness.filepath like '%.java') "
-        #else:
-        return ""
-
     def __changedPathSqlFilter(self):
-        # TODO: use the regexp
-        #if( self.__filterpaths != None):
-        #    return " and (SVNLogDetailVw.changedpath like '%.java') "
-        #else:
-        return ""
+        if( self.__filterpaths != None):
+            return self.__filterpaths
+        else:
+            return ".*"
         
     @property
     def searchpath(self):
@@ -480,10 +477,10 @@ class SVNStats(object):
         #create a temporary view with file counts for given change type for a revision
         self.cur.execute('DROP TABLE IF EXISTS filestats')
         self.cur.execute('CREATE TEMP TABLE filestats AS \
-                select SVNLogDetailVw.revno as revno, count(*) as addcount, 0 as delcount from SVNLogDetailVw where changetype= "A" and changedpath like "%s" %s and pathtype= "F" group by revno\
+                select SVNLogDetailVw.revno as revno, count(*) as addcount, 0 as delcount from SVNLogDetailVw where changetype= "A" and changedpath like ? and changedpath REGEXP ? and pathtype= "F" group by revno\
                 UNION \
-                select SVNLogDetailVw.revno as revno, 0 as addcount, count(*) as delcount from SVNLogDetailVw where changetype= "D" and changedpath like "%s" %s and pathtype= "F" group by revno'
-                         % (self.sqlsearchpath,self.__changedPathSqlFilter(),self.sqlsearchpath,self.__changedPathSqlFilter()))
+                select SVNLogDetailVw.revno as revno, 0 as addcount, count(*) as delcount from SVNLogDetailVw where changetype= "D" and changedpath like ? and changedpath REGEXP ? and pathtype= "F" group by revno',
+                         (self.sqlsearchpath,self.__changedPathSqlFilter(),self.sqlsearchpath,self.__changedPathSqlFilter()))
         self.cur.execute('CREATE INDEX filestatsidx ON filestats(revno)')
         self.dbcon.commit()
         self.cur.execute('select date(SVNLog.commitdate,"localtime") as "commitdate [date]", \
@@ -531,12 +528,12 @@ class SVNStats(object):
 
         self.cur.execute("select ftype, (total(addedfiles)-total(deletedfiles)) as typecount from \
                          (select filetype(changedpath) as ftype, count(*) as addedfiles, 0 as deletedfiles from SVNLogDetailVw \
-                         where SVNLogDetailVw.changedpath like ? "+self.__changedPathSqlFilter()+" and pathtype == 'F' and changetype= 'A' group by ftype\
+                         where SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and pathtype == 'F' and changetype= 'A' group by ftype\
                          UNION ALL \
                          select filetype(changedpath) as ftype, 0 as addedfiles, count(*) as deletedfiles from SVNLogDetailVw \
-                         where SVNLogDetailVw.changedpath like ? "+self.__changedPathSqlFilter()+" and pathtype == 'F' and changetype= 'D' group by ftype\
+                         where SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and pathtype == 'F' and changetype= 'D' group by ftype\
                          ) group by ftype order by typecount DESC limit 0,?"
-                         , (self.sqlsearchpath,self.sqlsearchpath,numTypes))
+                         , (self.sqlsearchpath,self.__changedPathSqlFilter(),self.sqlsearchpath,self.__changedPathSqlFilter(),numTypes))
 
         ftypelist = []
         ftypecountlist = []
@@ -555,15 +552,15 @@ class SVNStats(object):
         '''
         self.cur.execute('select commitdate as "commitdate [date]", sum(linesadded), sum(linesdeleted), total(addedfiles), total(deletedfiles) from \
                     (select date(SVNLog.commitdate,"localtime") as commitdate, total(SVNLogDetailVw.linesadded) as LinesAdded, total(SVNLogDetailVw.linesdeleted) as LinesDeleted, \
-                        0 as addedfiles, 0 as deletedfiles from SVNLogDetailVw, SVNLog where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' group by commitdate \
+                        0 as addedfiles, 0 as deletedfiles from SVNLogDetailVw, SVNLog where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? group by commitdate \
                         UNION ALL \
                          select commitdate, 0 as linesadded, 0 as linesdeleted, total(addedfiles) as addedfiles, total(deletedfiles) as deletedfiles from \
                              (select date(SVNLog.commitdate,"localtime") as commitdate, count(*) as addedfiles, 0 as deletedfiles from SVNLog, SVNLogDetailVw \
-                             where SVNLog.revno=SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' and SVNLogDetailVw.changetype="A" and SVNLogDetailVw.pathtype= "F" group by commitdate \
+                             where SVNLog.revno=SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and SVNLogDetailVw.changetype="A" and SVNLogDetailVw.pathtype= "F" group by commitdate \
                             union all \
                             select date(SVNLog.commitdate,"localtime") as commitdate, 0 as addedfiles, count(*) as deletedfiles from SVNLog, SVNLogDetailVw \
-                             where SVNLog.revno=SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' and SVNLogDetailVw.changetype="D" and SVNLogDetailVw.pathtype= "F" group by commitdate) group by commitdate) \
-                            group by commitdate order by commitdate ASC', (self.sqlsearchpath,self.sqlsearchpath,self.sqlsearchpath))
+                             where SVNLog.revno=SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and SVNLogDetailVw.changetype="D" and SVNLogDetailVw.pathtype= "F" group by commitdate) group by commitdate) \
+                            group by commitdate order by commitdate ASC', (self.sqlsearchpath,self.__changedPathSqlFilter(),self.sqlsearchpath,self.__changedPathSqlFilter(),self.sqlsearchpath,self.__changedPathSqlFilter(),))
         dates = []
         avgloclist = []
         avgloc = 0
@@ -594,9 +591,9 @@ class SVNStats(object):
         '''
         self.cur.execute("select SVNLog.author, sum(SVNLog.addedfiles), sum(SVNLog.changedfiles), \
                          sum(SVNLog.deletedfiles), count(distinct SVNLog.revno) as commitcount from SVNLog, SVNLogDetailVw \
-                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? "+self.__changedPathSqlFilter()+" \
+                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? \
                          group by SVNLog.author order by commitcount DESC LIMIT 0, ?"
-                         , (self.sqlsearchpath, numAuthors,))
+                         , (self.sqlsearchpath, self.__changedPathSqlFilter(), numAuthors,))
 
         authlist = []
         addfraclist = []
@@ -633,11 +630,11 @@ class SVNStats(object):
 
         self.cur.execute('select dirpath, total(addedfiles) as addedfiles, total(deletedfiles) as deletedfiles from \
                              (select dirname(?, changedpath, ?) as dirpath, count(*) as addedfiles, 0 as deletedfiles from SVNLog, SVNLogDetailVw \
-                             where SVNLog.revno=SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' and SVNLogDetailVw.changetype="A" and SVNLogDetailVw.pathtype= "F" group by dirpath \
+                             where SVNLog.revno=SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and SVNLogDetailVw.changetype="A" and SVNLogDetailVw.pathtype= "F" group by dirpath \
                             union all \
                             select dirname(?, changedpath, ?) as dirpath, 0 as addedfiles, count(*) as deletedfiles from SVNLog, SVNLogDetailVw \
-                             where SVNLog.revno=SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' and SVNLogDetailVw.changetype="D" and SVNLogDetailVw.pathtype= "F" group by dirpath) \
-                            group by dirpath',(self.searchpath,dirdepth, self.sqlsearchpath,self.searchpath,dirdepth, self.sqlsearchpath,))
+                             where SVNLog.revno=SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and SVNLogDetailVw.changetype="D" and SVNLogDetailVw.pathtype= "F" group by dirpath) \
+                            group by dirpath',(self.searchpath,dirdepth, self.sqlsearchpath,self.__changedPathSqlFilter(),self.searchpath,dirdepth, self.sqlsearchpath,self.__changedPathSqlFilter(),))
         
         dirinfolist = []
         for dirname, addedfiles,deletedfiles in self.cur:
@@ -675,8 +672,8 @@ class SVNStats(object):
         '''
         self.cur.execute("select dirname(?, SVNLogDetailVw.changedpath, ?) as dirpath, sum(SVNLogDetailVw.linesadded), \
                          sum(SVNLogDetailVw.linesdeleted) from SVNLog, SVNLogDetailVw \
-                    where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? "+self.__changedPathSqlFilter()+" \
-                    group by dirpath", (self.searchpath,dirdepth, self.sqlsearchpath,))
+                    where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? \
+                    group by dirpath", (self.searchpath,dirdepth, self.sqlsearchpath,self.__changedPathSqlFilter() ))
             
             
         dirinfolist = []
@@ -711,8 +708,8 @@ class SVNStats(object):
         gets the directory names upto depth (dirdepth) relative to searchpath.
         returns one list of directory names
         '''
-        self.cur.execute("select dirname(?, changedpath, ?) as dirpath from SVNLogDetailVw where changedpath like ? "+self.__changedPathSqlFilter()+" \
-                         group by dirpath",(self.searchpath, dirdepth, self.sqlsearchpath))
+        self.cur.execute("select dirname(?, changedpath, ?) as dirpath from SVNLogDetailVw where changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? \
+                         group by dirpath",(self.searchpath, dirdepth, self.sqlsearchpath, self.__changedPathSqlFilter()))
         
         dirlist = [dirname for dirname, in self.cur]
         return(dirlist)
@@ -723,8 +720,8 @@ class SVNStats(object):
         '''
         self.cur.execute('select date(SVNLog.commitdate,"localtime") as "commitdate [date]", sum(SVNLogDetailVw.linesadded), sum(SVNLogDetailVw.linesdeleted) \
                          from SVNLog, SVNLogDetailVw \
-                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' \
-                         group by "commitdate [date]" order by commitdate ASC', (self.sqlsearchpath,))
+                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? \
+                         group by "commitdate [date]" order by commitdate ASC', (self.sqlsearchpath,self.__changedPathSqlFilter()))
         dates = []
         loc = []
         totalloc = 0
@@ -757,9 +754,9 @@ class SVNStats(object):
         '''
         sqlQuery = 'select date(SVNLog.commitdate,"localtime") as "commitdate [date]", sum(SVNLogDetailVw.linesadded+SVNLogDetailVw.linesdeleted) as churn \
                          from SVNLog, SVNLogDetailVw \
-                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' \
+                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? \
                          group by "commitdate [date]" order by commitdate ASC'
-        self.cur.execute(sqlQuery, (self.sqlsearchpath,))
+        self.cur.execute(sqlQuery, (self.sqlsearchpath,self.__changedPathSqlFilter(),))
         dates = []
         churnloclist = []
         tocalloc = 0
@@ -775,12 +772,10 @@ class SVNStats(object):
         gets LoC trend data for directory 'dirname'.
         returns two lists (dates and total LoC at that date) for the directory 'dirname'
         '''
-        sqlQuery = 'select date(SVNLog.commitdate,"localtime") as "commitdate [date]", \
+        self.cur.execute('select date(SVNLog.commitdate,"localtime") as "commitdate [date]", \
                         sum(SVNLogDetailVw.linesadded), sum(SVNLogDetailVw.linesdeleted) from SVNLog, SVNLogDetailVw \
-                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like "%s%%" %s \
-                         group by "commitdate [date]" order by commitdate ASC' % (dirname,self.__changedPathSqlFilter())
-
-        self.cur.execute(sqlQuery)
+                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? \
+                         group by "commitdate [date]" order by commitdate ASC', (dirname,self.__changedPathSqlFilter(),))
         dates = []
         dirsizelist = []
         dirsize = 0
@@ -829,8 +824,8 @@ class SVNStats(object):
         '''
         self.cur.execute('select date(SVNLog.commitdate,"localtime") as "commitdate [date]", sum(SVNLogDetailVw.linesadded),\
                         sum(SVNLogDetailVw.linesdeleted) from SVNLog, SVNLogDetailVw \
-                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' and SVNLog.author=? \
-                         group by "commitdate [date]" order by commitdate ASC',(self.sqlsearchpath, author,))
+                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and SVNLog.author=? \
+                         group by "commitdate [date]" order by commitdate ASC',(self.sqlsearchpath,self.__changedPathSqlFilter(),author,))
         dates = []
         loc = []
         totalloc = 0
@@ -863,9 +858,9 @@ class SVNStats(object):
         returns three lists (dates, total line count on that date, churn count on that date)
         '''
         sqlquery = 'select date(SVNLog.commitdate,"localtime") as "commitdate [date]", count(*) as commitfilecount \
-                         from SVNLog, SVNLogDetailVw where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like "%s" %s \
+                         from SVNLog, SVNLogDetailVw where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like "%s" and SVNLogDetailVw.changedpath REGEXP "%s" \
                          and %s group by "commitdate [date]" order by commitdate ASC' % (self.sqlsearchpath, self.__changedPathSqlFilter(), self.__sqlForbugFixKeywordsInMsg())
-        
+
         self.cur.execute(sqlquery)
         dates = []
         fc = []
@@ -914,8 +909,8 @@ class SVNStats(object):
         get word frequency of log messages. Common words like 'a', 'the' are removed.
         returns a dictionary with words as key and frequency of occurance as value
         '''
-        self.cur.execute("select SVNLog.msg from SVNLog, SVNLogDetailVw where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? "+self.__changedPathSqlFilter()+" \
-                         group by SVNLogDetailVw.revno",(self.sqlsearchpath,))
+        self.cur.execute("select SVNLog.msg from SVNLog, SVNLogDetailVw where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath regexp ? \
+                         group by SVNLogDetailVw.revno",(self.sqlsearchpath,self.__changedPathSqlFilter()))
 
         wordFreq = dict()
         pattern = re.compile('\W+')
@@ -945,8 +940,8 @@ class SVNStats(object):
         authset = set(self.getAuthorList(numTopAuthors))
 
         self.cur.execute('select SVNLog.revno, SVNLog.author, SVNLog.commitdate as "commitdate [timestamp]" from SVNLog,SVNLogDetailVw \
-                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' \
-                         group by SVNLogDetailVw.revno order by SVNLogDetailVw.revno ASC',(self.sqlsearchpath,))
+                         where SVNLog.revno = SVNLogDetailVw.revno and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? \
+                         group by SVNLogDetailVw.revno order by SVNLogDetailVw.revno ASC',(self.sqlsearchpath,self.__changedPathSqlFilter(),))
 
         lastcommitdate = None
         revnolist = []
@@ -983,7 +978,7 @@ class SVNStats(object):
         self.cur.execute('select min(revno), max(revno), count(*) from \
                           (select SVNLog.revno as revno from SVNLog,SVNLogDetailVw \
                              where SVNLog.revno == SVNLogDetailVw.revno and \
-                             SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' group by SVNLog.revno)',(self.sqlsearchpath,))
+                             SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? group by SVNLog.revno)',(self.sqlsearchpath,self.__changedPathSqlFilter(),))
         row = self.cur.fetchone()
         firstrev = row[0]
         lastrev = row[1]
@@ -1002,11 +997,11 @@ class SVNStats(object):
         stats['LastRevDate'] = row[0]
         #get number of unique paths(files) (added and deleted)
         self.cur.execute('select count(*) from SVNLogDetailVw where SVNLogDetailVw.changetype = "A" \
-                        and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' and SVNLogDetailVw.pathtype="F"', (self.sqlsearchpath,))
+                        and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and SVNLogDetailVw.pathtype="F"', (self.sqlsearchpath,self.__changedPathSqlFilter(),))
         row = self.cur.fetchone()
         filesAdded = row[0]
         self.cur.execute('select count(*) from SVNLogDetailVw where SVNLogDetailVw.changetype = "D" \
-                        and SVNLogDetailVw.changedpath like ? '+self.__changedPathSqlFilter()+' and SVNLogDetailVw.pathtype="F"', (self.sqlsearchpath,))
+                        and SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? and SVNLogDetailVw.pathtype="F"', (self.sqlsearchpath,self.__changedPathSqlFilter(),))
         row = self.cur.fetchone()
         filesDeleted = row[0]
         stats['NumFiles'] = filesAdded-filesDeleted
@@ -1014,8 +1009,8 @@ class SVNStats(object):
         stats['NumAuthors'] = len(authors)
     
         self.cur.execute("select sum(SVNLogDetailVw.linesadded-SVNLogDetailVw.linesdeleted) \
-                         from SVNLogDetailVw where SVNLogDetailVw.changedpath like ? "+self.__changedPathSqlFilter()+""
-                         ,(self.sqlsearchpath,))
+                         from SVNLogDetailVw where SVNLogDetailVw.changedpath like ? and SVNLogDetailVw.changedpath REGEXP ? "
+                         ,(self.sqlsearchpath,self.__changedPathSqlFilter(),))
         row = self.cur.fetchone()
         stats['LoC'] = row[0]
         return(stats)
@@ -1188,8 +1183,8 @@ class SVNStats(object):
         self.cur.execute("select ActivityHotness.filepath, \
                 getTemperatureAtTime(?,SVNLog.commitdate,ActivityHotness.temperature,?) as hotness \
                 from ActivityHotness,SVNLog \
-                where ActivityHotness.filepath like ? "+self.__activityHotnessSqlFilter()+" and ActivityHotness.lastrevno=SVNLog.revno \
-                order by hotness DESC LIMIT ?", (curTime,COOLINGRATE,self.sqlsearchpath,numFiles))
+                where ActivityHotness.filepath like ? and ActivityHotness.filepath REGEXP ? and ActivityHotness.lastrevno=SVNLog.revno \
+                order by hotness DESC LIMIT ?", (curTime,COOLINGRATE,self.sqlsearchpath,self.__changedPathSqlFilter(),numFiles))
         hotfileslist = [(filepath, hotness) for filepath, hotness in self.cur]
         hotfileslist = map(_getfilecount, hotfileslist)
                 
