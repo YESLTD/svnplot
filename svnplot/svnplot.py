@@ -217,8 +217,9 @@ class SVNPlot(SVNPlotMatplotLib):
                 self.template = f.read()
  
                 
-    def AllGraphs(self, dirpath, svnsearchpath='/', thumbsize=100, maxdircount = 10):
+    def AllGraphs(self, dirpath, svnsearchpath='/', thumbsize=100, maxdircount = 10, filterpaths=None):
         self.svnstats.SetSearchPath(svnsearchpath)
+        self.svnstats.SetFilterPaths(filterpaths)
         #Commit activity graphs
         self.ActivityByWeekday(self._getGraphFileName(dirpath, "ActByWeek"))
         self.ActivityByTimeOfDay(self._getGraphFileName(dirpath, "ActByTimeOfDay"))
@@ -616,7 +617,9 @@ def RunMain():
                       action="store", type="string", help="template filename (optional)")
     parser.add_option("-m","--maxdir",dest="maxdircount", default=10, type="int",
                       help="limit the number of directories on the graph to the x largest directories")
-    
+    parser.add_option("-f","--filter",dest="filterpaths", default=None, type="string",
+                      help="Only consider the file paths that match given regular expression")
+
     (options, args) = parser.parse_args()
     
     if( len(args) < 2):
@@ -636,6 +639,7 @@ def RunMain():
             print "Search path inside repository : %s" % options.searchpath
             print "Graph thumbnail size : %s" % options.thumbsize
             print "Maximum dir count: %d" % options.maxdircount
+            print "Filter paths: %s" % options.filterpaths
             if( options.template== None):
                 print "using default html template"
             else:
@@ -653,7 +657,7 @@ def RunMain():
         svnplot = SVNPlot(svnstats, dpi=options.dpi, template=options.template)
         svnplot.SetVerbose(options.verbose)
         svnplot.SetRepoName(options.reponame)
-        svnplot.AllGraphs(graphdir, options.searchpath, options.thumbsize, options.maxdircount)
+        svnplot.AllGraphs(graphdir, options.searchpath, options.thumbsize, options.maxdircount, options.filterpaths)
         
 if(__name__ == "__main__"):
     RunMain()
